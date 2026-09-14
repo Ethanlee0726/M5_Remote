@@ -12,6 +12,10 @@ Mode currentMode = NORMAL;
 
 bool isRunning = false;
 
+const unsigned long COUNTDOWN_DURATION_MS = 30000;
+unsigned long countdownStartMillis = 0;
+unsigned long remainingSeconds = 0;
+
 unsigned long bPressStart = 0;
 bool bHolding = false;
 bool longPressTriggered = false;
@@ -35,9 +39,18 @@ void showNormal() {
   M5.Lcd.print("STATUS: ");
 
   if (isRunning) {
-    M5.Lcd.println("START");
+    M5.Lcd.println("RUNNING");
+
+    M5.Lcd.setCursor(10, 80);
+    M5.Lcd.printf("REMAINING: %02lu s", remainingSeconds);
+
+    M5.Lcd.setCursor(10, 105);
+    M5.Lcd.println("BTN A: STOP");
   } else {
-    M5.Lcd.println("STOP");
+    M5.Lcd.println("STANDBY");
+
+    M5.Lcd.setCursor(10, 80);
+    M5.Lcd.println("BTN A: START");
   }
 }
 
@@ -88,7 +101,15 @@ void loop() {
 
     // 正常模式：START / STOP
     if (currentMode == NORMAL) {
-      isRunning = !isRunning;
+      if (isRunning) {
+        isRunning = false;
+        remainingSeconds = 0;
+      } else {
+        isRunning = true;
+        countdownStartMillis = millis();
+        remainingSeconds = COUNTDOWN_DURATION_MS / 1000;
+      }
+
       showNormal();
     }
 
@@ -183,10 +204,25 @@ void loop() {
   if (currentMode == NORMAL) {
 
     static unsigned long lastUpdate = 0;
+    unsigned long now = millis();
 
-    if (millis() - lastUpdate >= 1000) {
+    if (isRunning) {
+      unsigned long elapsedMillis = now - countdownStartMillis;
 
-      lastUpdate = millis();
+      if (elapsedMillis >= COUNTDOWN_DURATION_MS) {
+        isRunning = false;
+        remainingSeconds = 0;
+        showNormal();
+        lastUpdate = now;
+        return;
+      }
+
+      remainingSeconds = (COUNTDOWN_DURATION_MS - elapsedMillis + 999) / 1000;
+    }
+
+    if (now - lastUpdate >= 1000) {
+
+      lastUpdate = now;
 
       showNormal();
     }
