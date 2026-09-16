@@ -1,4 +1,6 @@
 #include <M5StickCPlus.h>
+#include <WiFi.h>
+#include <esp_now.h>
 
 RTC_TimeTypeDef RTC_TimeStruct;
 
@@ -12,6 +14,9 @@ Mode currentMode = NORMAL;
 
 bool isRunning = false;
 
+// TODO: Replace with ESP32 Sensor MAC address
+uint8_t receiverMac[] = {0xD0, 0xCF, 0x13, 0x41, 0x1B, 0x80};
+
 const unsigned long COUNTDOWN_DURATION_MS = 30000;
 unsigned long countdownStartMillis = 0;
 unsigned long remainingSeconds = 0;
@@ -19,6 +24,28 @@ unsigned long remainingSeconds = 0;
 unsigned long bPressStart = 0;
 bool bHolding = false;
 bool longPressTriggered = false;
+
+void onDataSent(const uint8_t *macAddress, esp_now_send_status_t status) {
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    Serial.println("Send success");
+  } else {
+    Serial.println("Send failed");
+  }
+}
+
+void sendCommand(const char *command) {
+  Serial.print("Sending: ");
+  Serial.println(command);
+
+  esp_err_t result = esp_now_send(
+      receiverMac,
+      reinterpret_cast<const uint8_t *>(command),
+      strlen(command));
+
+  if (result != ESP_OK) {
+    Serial.printf("ESP-NOW send error: %d\n", result);
+  }
+}
 
 void showNormal() {
   M5.Rtc.GetTime(&RTC_TimeStruct);
@@ -84,6 +111,24 @@ void showSetMinute() {
 
 void setup() {
   M5.begin();
+  Serial.begin(115200);
+
+  WiFi.mode(WIFI_STA);
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed");
+  } else {
+    esp_now_register_send_cb(onDataSent);
+
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, receiverMac, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+      Serial.println("ESP-NOW peer add failed");
+    }
+  }
 
   M5.Lcd.setRotation(1);
   M5.Lcd.fillScreen(BLACK);
@@ -104,10 +149,12 @@ void loop() {
       if (isRunning) {
         isRunning = false;
         remainingSeconds = 0;
+        sendCommand("STOP");
       } else {
         isRunning = true;
         countdownStartMillis = millis();
         remainingSeconds = COUNTDOWN_DURATION_MS / 1000;
+        sendCommand("START");
       }
 
       showNormal();
