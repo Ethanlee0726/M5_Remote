@@ -19,13 +19,13 @@ bool isRunning = false;
 uint8_t receiverMac[] = {0xD0, 0xCF, 0x13, 0x41, 0x1B, 0x80};
 
 const unsigned long COUNTDOWN_DURATION_MS = 60000;
-const unsigned long SUCCESS_DISPLAY_DURATION_MS = 5000;
+const unsigned long ERROR_DISPLAY_DURATION_MS = 5000;
 const unsigned long RECEIVE_CALLBACK_DEBUG_INTERVAL_MS = 2000;
 unsigned long countdownStartMillis = 0;
 unsigned long remainingSeconds = 0;
-unsigned long successStartMillis = 0;
-volatile bool doneReceived = false;
-bool showingSuccess = false;
+volatile bool errorReceived = false;
+bool showingError = false;
+unsigned long errorStartMillis = 0;
 esp_err_t recvCbResult = ESP_ERR_ESPNOW_NOT_INIT;
 unsigned long lastRecvCbDebugMillis = 0;
 
@@ -74,11 +74,10 @@ void onDataRecv(const uint8_t *macAddress, const uint8_t *incomingData, int len)
     Serial.printf("[%lu ms] CONNECTION TEST PASSED\n", millis());
   }
 
-  if (len == 4 && memcmp(incomingData, "DONE", 4) == 0) {
-    Serial.printf("[%lu ms] RX DONE recognized\n", millis());
+  if (len == 5 && memcmp(incomingData, "ERROR", 5) == 0) {
+    Serial.printf("[%lu ms] RX ERROR recognized\n", millis());
     Serial.println("State -> STANDBY");
-    Serial.println("Success screen -> ON");
-    doneReceived = true;
+    errorReceived = true;
   }
 }
 
@@ -298,11 +297,11 @@ void showNormal() {
   M5.Lcd.printf("%d%%", getBatteryPercentage());
 }
 
-void showRecordSuccess() {
+void showRecordError() {
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextSize(2);
   M5.Lcd.setCursor(10, 55);
-  M5.Lcd.println("RECORD SUCCESS");
+  M5.Lcd.println("RECORD ERROR");
 }
 
 void showSetHour() {
@@ -411,19 +410,19 @@ void loop() {
     }
   }
 
-  if (doneReceived) {
-    doneReceived = false;
+  if (errorReceived) {
+    errorReceived = false;
     isRunning = false;
     remainingSeconds = 0;
     currentMode = NORMAL;
-    showingSuccess = true;
-    successStartMillis = millis();
-    showRecordSuccess();
+    showingError = true;
+    errorStartMillis = millis();
+    showRecordError();
   }
 
-  if (showingSuccess) {
-    if (millis() - successStartMillis >= SUCCESS_DISPLAY_DURATION_MS) {
-      showingSuccess = false;
+  if (showingError) {
+    if (millis() - errorStartMillis >= ERROR_DISPLAY_DURATION_MS) {
+      showingError = false;
       currentMode = NORMAL;
       showNormal();
     } else {
