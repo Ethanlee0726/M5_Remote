@@ -16,7 +16,7 @@ Mode currentMode = NORMAL;
 bool isRunning = false;
 
 // TODO: Replace with ESP32 Sensor MAC address
-uint8_t receiverMac[] = {0xD0, 0xCF, 0x13, 0x41, 0x1B, 0x80};
+uint8_t receiverMac[] = {0xD0, 0xCF, 0x13, 0x41, 0x1A, 0x80};
 
 const unsigned long COUNTDOWN_DURATION_MS = 60000;
 const unsigned long ERROR_DISPLAY_DURATION_MS = 5000;
@@ -113,6 +113,11 @@ void sendTimestampedCommand(const char *eventName) {
            eventName,
            date.Year, date.Month, date.Date,
            time.Hours, time.Minutes, time.Seconds);
+  Serial.printf("[%lu ms] M5 %s send datetime: %04u-%02u-%02u %02u:%02u:%02u\n",
+                millis(),
+                eventName,
+                date.Year, date.Month, date.Date,
+                time.Hours, time.Minutes, time.Seconds);
   sendCommand(command);
 }
 
