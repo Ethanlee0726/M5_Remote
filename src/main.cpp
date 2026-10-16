@@ -33,6 +33,25 @@ unsigned long bPressStart = 0;
 bool bHolding = false;
 bool longPressTriggered = false;
 
+const size_t BATTERY_SAMPLE_COUNT = 10;
+const unsigned long BATTERY_SAMPLE_INTERVAL_MS = 1000;
+const unsigned long BATTERY_PERCENT_INTERVAL_MS = 10000;
+const unsigned long BATTERY_USB_SETTLE_MS = 7000;
+const float USB_CONNECTED_VOLTAGE = 4.0f;
+const float BATTERY_LOW_VOLTAGE = 3.60f;
+
+float batteryVoltageSamples[BATTERY_SAMPLE_COUNT] = {};
+float latestBatteryVoltage = 0.0f;
+size_t batterySampleCount = 0;
+size_t batterySampleIndex = 0;
+int cachedBatteryPercentage = 0;
+bool batteryPercentageValid = false;
+bool usbConnected = false;
+bool waitingForBatteryToSettle = false;
+unsigned long usbDisconnectedMillis = 0;
+unsigned long lastBatterySampleMillis = 0;
+unsigned long lastBatteryPercentMillis = 0;
+
 void printMacLine(const char *label, const uint8_t *macAddress) {
   Serial.printf("%s%02X:%02X:%02X:%02X:%02X:%02X\n",
                 label,
@@ -236,32 +255,158 @@ void initializeRtcFromBuildTime() {
   printRtcDateTime("RTC initialized: ", currentDate, currentTime);
 }
 
+struct BatteryCurvePoint {
+  float voltage;
+  int percentage;
+};
+
+const BatteryCurvePoint BATTERY_CURVE[] = {
+    {3.30f, 0},  {3.45f, 10}, {3.60f, 20}, {3.68f, 30},
+    {3.74f, 40}, {3.79f, 50}, {3.85f, 60}, {3.92f, 70},
+    {4.00f, 80}, {4.10f, 90}, {4.20f, 100},
+};
+
+bool isUsbConnected() {
+  return M5.Axp.GetVBusVoltage() >= USB_CONNECTED_VOLTAGE;
+}
+
+void addBatteryVoltageSample(float voltage) {
+  if (voltage < 2.5f || voltage > 4.5f) {
+    return;
+  }
+
+  latestBatteryVoltage = voltage;
+  batteryVoltageSamples[batterySampleIndex] = voltage;
+  batterySampleIndex = (batterySampleIndex + 1) % BATTERY_SAMPLE_COUNT;
+  if (batterySampleCount < BATTERY_SAMPLE_COUNT) {
+    batterySampleCount++;
+  }
+}
+
+float getFilteredBatteryVoltage() {
+  if (batterySampleCount == 0) {
+    return 0.0f;
+  }
+
+  float sortedSamples[BATTERY_SAMPLE_COUNT];
+  for (size_t i = 0; i < batterySampleCount; ++i) {
+    sortedSamples[i] = batteryVoltageSamples[i];
+  }
+
+  for (size_t i = 1; i < batterySampleCount; ++i) {
+    const float value = sortedSamples[i];
+    size_t position = i;
+    while (position > 0 && sortedSamples[position - 1] > value) {
+      sortedSamples[position] = sortedSamples[position - 1];
+      position--;
+    }
+    sortedSamples[position] = value;
+  }
+
+  const size_t first = batterySampleCount >= 5 ? 1 : 0;
+  const size_t last = batterySampleCount >= 5
+                          ? batterySampleCount - 1
+                          : batterySampleCount;
+  float sum = 0.0f;
+  for (size_t i = first; i < last; ++i) {
+    sum += sortedSamples[i];
+  }
+  return sum / static_cast<float>(last - first);
+}
+
+int batteryVoltageToPercentage(float voltage) {
+  const size_t curvePointCount =
+      sizeof(BATTERY_CURVE) / sizeof(BATTERY_CURVE[0]);
+
+  if (voltage <= BATTERY_CURVE[0].voltage) {
+    return 0;
+  }
+  if (voltage >= BATTERY_CURVE[curvePointCount - 1].voltage) {
+    return 100;
+  }
+
+  for (size_t i = 1; i < curvePointCount; ++i) {
+    if (voltage <= BATTERY_CURVE[i].voltage) {
+      const BatteryCurvePoint &lower = BATTERY_CURVE[i - 1];
+      const BatteryCurvePoint &upper = BATTERY_CURVE[i];
+      const float ratio =
+          (voltage - lower.voltage) / (upper.voltage - lower.voltage);
+      const int percentage = static_cast<int>(
+          lower.percentage + ratio * (upper.percentage - lower.percentage) +
+          0.5f);
+      return constrain(percentage, 0, 100);
+    }
+  }
+
+  return 100;
+}
+
+void updateCachedBatteryPercentage() {
+  if (batterySampleCount == 0) {
+    return;
+  }
+
+  const float filteredVoltage = getFilteredBatteryVoltage();
+  const int newPercentage = batteryVoltageToPercentage(filteredVoltage);
+  const int latestPercentage =
+      batteryVoltageToPercentage(latestBatteryVoltage);
+
+  if (!batteryPercentageValid) {
+    cachedBatteryPercentage = newPercentage;
+    batteryPercentageValid = true;
+  } else if (latestBatteryVoltage <= BATTERY_LOW_VOLTAGE &&
+             latestPercentage < cachedBatteryPercentage) {
+    cachedBatteryPercentage = latestPercentage;
+  } else if (newPercentage > cachedBatteryPercentage) {
+    cachedBatteryPercentage++;
+  } else if (newPercentage < cachedBatteryPercentage) {
+    cachedBatteryPercentage--;
+  }
+
+  cachedBatteryPercentage = constrain(cachedBatteryPercentage, 0, 100);
+}
+
+void initializeBatteryMonitoring() {
+  const unsigned long now = millis();
+  usbConnected = isUsbConnected();
+  addBatteryVoltageSample(M5.Axp.GetBatVoltage());
+  updateCachedBatteryPercentage();
+  lastBatterySampleMillis = now;
+  lastBatteryPercentMillis = now;
+}
+
+void updateBatteryMonitoring(unsigned long now) {
+  if (now - lastBatterySampleMillis < BATTERY_SAMPLE_INTERVAL_MS) {
+    return;
+  }
+  lastBatterySampleMillis = now;
+
+  const bool usbConnectedNow = isUsbConnected();
+  if (usbConnected && !usbConnectedNow) {
+    waitingForBatteryToSettle = true;
+    usbDisconnectedMillis = now;
+    batterySampleCount = 0;
+    batterySampleIndex = 0;
+  }
+  usbConnected = usbConnectedNow;
+
+  if (waitingForBatteryToSettle) {
+    if (now - usbDisconnectedMillis < BATTERY_USB_SETTLE_MS) {
+      return;
+    }
+    waitingForBatteryToSettle = false;
+  }
+
+  addBatteryVoltageSample(M5.Axp.GetBatVoltage());
+  if (now - lastBatteryPercentMillis >= BATTERY_PERCENT_INTERVAL_MS ||
+      batterySampleCount == 1 || latestBatteryVoltage <= BATTERY_LOW_VOLTAGE) {
+    updateCachedBatteryPercentage();
+    lastBatteryPercentMillis = now;
+  }
+}
+
 int getBatteryPercentage() {
-  const float batteryVoltage = M5.Axp.GetBatVoltage();
-  const float minimumVoltage = 3.0f;
-  const float maximumVoltage = 4.2f;
-
-  if (batteryVoltage <= minimumVoltage) {
-    return 0;
-  }
-
-  if (batteryVoltage >= maximumVoltage) {
-    return 100;
-  }
-
-  const int percentage = static_cast<int>(
-      ((batteryVoltage - minimumVoltage) /
-       (maximumVoltage - minimumVoltage)) * 100.0f + 0.5f);
-
-  if (percentage < 0) {
-    return 0;
-  }
-
-  if (percentage > 100) {
-    return 100;
-  }
-
-  return percentage;
+  return cachedBatteryPercentage;
 }
 
 void showNormal() {
@@ -299,7 +444,7 @@ void showNormal() {
 
   M5.Lcd.setTextSize(2);
   M5.Lcd.setCursor(190, 10);
-  M5.Lcd.printf("%d%%", getBatteryPercentage());
+  M5.Lcd.printf("%d%%%s", getBatteryPercentage(), usbConnected ? "+" : "");
 }
 
 void showRecordError() {
@@ -398,6 +543,7 @@ void setup() {
   M5.Lcd.setRotation(1);
   M5.Lcd.fillScreen(BLACK);
 
+  initializeBatteryMonitoring();
   showNormal();
 }
 
@@ -405,6 +551,7 @@ void loop() {
   M5.update();
 
   unsigned long now = millis();
+  updateBatteryMonitoring(now);
   if (now - lastRecvCbDebugMillis >= RECEIVE_CALLBACK_DEBUG_INTERVAL_MS) {
     lastRecvCbDebugMillis = now;
     Serial.printf("Receive callback register result: %d\n", recvCbResult);
