@@ -16,7 +16,7 @@ Mode currentMode = NORMAL;
 bool isRunning = false;
 
 // TODO: Replace with ESP32 Sensor MAC address
-uint8_t receiverMac[] = {0xD0, 0xCF, 0x13, 0x41, 0x1A, 0x80};
+uint8_t receiverMac[] = {0xD0, 0xCF, 0x13, 0x41, 0x14, 0x10};
 
 const unsigned long COUNTDOWN_DURATION_MS = 60000;
 const unsigned long ERROR_DISPLAY_DURATION_MS = 5000;
@@ -242,13 +242,13 @@ void initializeRtcFromBuildTime() {
   RTC_DateTypeDef buildDate = {};
   RTC_TimeTypeDef buildTime = {};
   if (!getBuildDateTime(&buildDate, &buildTime)) {
-    Serial.println("RTC invalid, but compile date/time could not be parsed.");
+    Serial.println("RTC calibration failed: compile date/time could not be parsed.");
     return;
   }
 
   M5.Rtc.SetDate(&buildDate);
   M5.Rtc.SetTime(&buildTime);
-  Serial.println("RTC date invalid; initialized from compile date/time.");
+  Serial.println("RTC calibration: forced from compile date/time.");
 
   M5.Rtc.GetDate(&currentDate);
   M5.Rtc.GetTime(&currentTime);
